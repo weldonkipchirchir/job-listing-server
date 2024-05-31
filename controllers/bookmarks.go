@@ -64,18 +64,24 @@ func (bh *BookmarkHandler) CreateBookmark(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, "bookmark added")
+	c.JSON(http.StatusCreated, bookmark)
 }
 
-// get bookmarks
-func (bh *BookmarkHandler) GetBookMarks(c *gin.Context) {
-	userId, ok := c.MustGet("id").(string)
+// GetBookMarks retrieves bookmarks for a user
+func (bh *BookmarkHandler) GetBookmarks(c *gin.Context) {
+	userId, ok := c.Get("id")
 	if !ok {
 		bh.errorHandler.HandleBadRequest(c)
 		return
 	}
 
-	objectId, err := primitive.ObjectIDFromHex(userId)
+	UserIdStr, ok := userId.(string)
+	if !ok {
+		bh.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	objectId, err := primitive.ObjectIDFromHex(UserIdStr)
 	if err != nil {
 		bh.errorHandler.HandleBadRequest(c)
 		return
@@ -159,7 +165,7 @@ func (bh *BookmarkHandler) DeleteBookmark(c *gin.Context) {
 		return
 	}
 
-	filter := bson.M{"userId": userObjectId, "_id": objectID}
+	filter := bson.M{"userId": userObjectId, "jobId": objectID}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
