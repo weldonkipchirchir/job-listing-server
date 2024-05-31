@@ -89,3 +89,15 @@ func LoginUser(email, password string) (*models.User, error) {
 	}
 	return user, nil
 }
+
+func UserSettings(email string) error {
+	user, err := getUserByEmail(email)
+	if err != nil {
+		return err
+	}
+
+	if user == nil {
+		return ErrUserNotFound
+	}
+	return nil
+}
