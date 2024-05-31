@@ -9,6 +9,7 @@ import (
 	"github.com/weldonkipchirchir/job-listing-server/db"
 	"github.com/weldonkipchirchir/job-listing-server/handler"
 	"github.com/weldonkipchirchir/job-listing-server/models"
+	"github.com/weldonkipchirchir/job-listing-server/utils"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -25,7 +26,6 @@ func NewApplicationHandler(collection *mongo.Collection, erroHandler *handler.Er
 		errorHandler: erroHandler,
 	}
 }
-
 func (ah *ApplicationHandler) GetAdminApplications(c *gin.Context) {
 	role, ok := c.MustGet("role").(string)
 	if !ok {
@@ -67,6 +67,12 @@ func (ah *ApplicationHandler) GetAdminApplications(c *gin.Context) {
 		return
 	}
 
+	// Check if the user has no jobs
+	if len(jobs) == 0 {
+		c.JSON(http.StatusOK, jobs)
+		return
+	}
+
 	var jobIDs []primitive.ObjectID
 	for _, job := range jobs {
 		jobIDs = append(jobIDs, job.ID)
@@ -87,9 +93,16 @@ func (ah *ApplicationHandler) GetAdminApplications(c *gin.Context) {
 		return
 	}
 
+	// Check if there are no applications for the user's job IDs
+	if len(applications) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "No applications available for the user's jobs"})
+		return
+	}
+
 	var applicationResponses []models.ApplicationAdminResponse
 	for _, application := range applications {
 		applicationResponse := models.ApplicationAdminResponse{
+			ID:      application.ID,
 			JobID:   application.JobID,
 			Resume:  application.Resume,
 			Name:    application.Name,
@@ -156,6 +169,9 @@ func (ah *ApplicationHandler) CreateApplications(c *gin.Context) {
 	application.Email = email
 	application.Name = name
 
+	statusCapitalize := utils.CapitalizeFirstLetter(application.Status)
+	application.Status = statusCapitalize
+
 	//check if the job exists
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -212,6 +228,7 @@ func (ah *ApplicationHandler) GetApplications(c *gin.Context) {
 
 	for _, application := range applications {
 		applicationResponse := models.ApplicationUserResponse{
+			ID:      application.ID,
 			JobID:   application.JobID,
 			Status:  application.Status,
 			JobName: application.JobName,
@@ -287,7 +304,7 @@ func (ah *ApplicationHandler) EditApplication(c *gin.Context) {
 		updateFields["name"] = updateApplication.Name
 	}
 	if updateApplication.Status != "" {
-		updateFields["status"] = updateApplication.Status
+		updateFields["status"] = utils.CapitalizeFirstLetter(updateApplication.Status)
 	}
 	if updateApplication.Resume.Filename != "" {
 		updateFields["resume.filename"] = updateApplication.Resume.Filename
