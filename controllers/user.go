@@ -1,13 +1,16 @@
 package controllers
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/weldonkipchirchir/job-listing-server/auth"
+	"github.com/weldonkipchirchir/job-listing-server/db"
 	"github.com/weldonkipchirchir/job-listing-server/models"
 	"github.com/weldonkipchirchir/job-listing-server/services"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -61,7 +64,7 @@ func Login(c *gin.Context) {
 
 	userIDString := user.ID.Hex()
 
-	token, refreshToken, err := auth.TokenGenerator(userIDString, user.FirstName, user.Email, user.Role)
+	token, refreshToken, err := auth.TokenGenerator(userIDString, user.Name, user.Email, user.Role)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
@@ -69,7 +72,7 @@ func Login(c *gin.Context) {
 
 	userResponse := models.UserResponse{
 		ID:    user.ID,
-		Name:  user.FirstName,
+		Name:  user.Name,
 		Email: user.Email,
 		Role:  user.Role,
 	}
@@ -80,9 +83,10 @@ func Login(c *gin.Context) {
 		"user":          userResponse,
 	}
 
-	// Set the new access token as a cookie
-	c.SetCookie("token", token, int(time.Hour)*30, "/", "", false, true)
-	c.SetCookie("refreshToken", refreshToken, int(time.Hour)*90, "/", "", false, true)
+	expirationTimeToken := time.Now().Add(24 * time.Hour * 7)
+	expirationTimeRefreshToken := time.Now().Add(24 * time.Hour * 30)
+	c.SetCookie("token", token, int(time.Until(expirationTimeToken).Seconds()), "/", "", false, true)
+	c.SetCookie("refreshToken", refreshToken, int(time.Until(expirationTimeRefreshToken).Seconds()), "/", "", false, true)
 
 	res["message"] = "Login successful"
 
@@ -90,5 +94,99 @@ func Login(c *gin.Context) {
 }
 
 func Logout(c *gin.Context) {
+	c.SetCookie("token", "", -1, "/", "", false, true)
+	c.SetCookie("refreshToken", "", -1, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
+}
+
+// update user settings
+func Settings(c *gin.Context) {
+	email, ok := c.Get("email")
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bad request"})
+		return
+	}
+	userEmail := email.(string)
+
+	userId, ok := c.Get("id")
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bad request"})
+		return
+	}
+
+	userIdStr, ok := userId.(string)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Bad request"})
+		return
+	}
+
+	userID, err := primitive.ObjectIDFromHex(userIdStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bad request"})
+		return
+	}
+
+	err = services.UserSettings(userEmail)
+	if err == services.ErrUserNotFound || err == services.ErrInvalidCredentials {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Bad request"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal Server Error"})
+		return
+	}
+
+	var user models.User
+	if err := c.BindJSON(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bad request"})
+		return
+	}
+
+	updateFields := bson.M{}
+
+	// Check and add each field to the update document if it's not empty
+	if user.Name != "" {
+		updateFields["name"] = user.Name
+	}
+	if user.Email != "" {
+		updateFields["email"] = user.Email
+	}
+	if user.Phone != "" {
+		updateFields["phone"] = user.Phone
+	}
+	if user.Address != "" {
+		updateFields["address"] = user.Address
+	}
+	if user.Role != "" {
+		updateFields["role"] = user.Role
+	}
+
+	// Check if the password field is non-empty
+	if user.Password != "" {
+		// Hash the password
+		hashedPassword, err := services.HashPassword(user.Password)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+			return
+		}
+		// Set the hashed password
+		updateFields["password"] = hashedPassword
+	}
+
+	// If there are no fields to update, return bad request
+	if len(updateFields) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No fields to update"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	update := bson.M{"$set": updateFields}
+	_, err = db.DB.Collection("users").UpdateOne(ctx, bson.M{"_id": userID}, update)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User updated successfully"})
 }
