@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"os"
 	"time"
 
@@ -83,11 +84,26 @@ func ValidateToken(signedToken string) (claims *SignedDetails, msg string) {
 func UpdateToken(refreshToken string) (token string, err error) {
 	claims, msg := ValidateToken(refreshToken)
 	if msg != "" {
+		return "", errors.New(msg)
+	}
+
+	// Create new access token with updated expiration time
+	newClaims := &SignedDetails{
+		Id:    claims.Id,
+		Name:  claims.Name,
+		Email: claims.Email,
+		Role:  claims.Role,
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: time.Now().Add(time.Minute * 15).Unix(),
+			Issuer:    "jobly",
+			IssuedAt:  time.Now().Unix(),
+		},
+	}
+
+	token, err = jwt.NewWithClaims(jwt.SigningMethodHS256, newClaims).SignedString([]byte(secretKey))
+	if err != nil {
 		return "", err
 	}
-	if claims.ExpiresAt < time.Now().Unix() {
-		claims.ExpiresAt = time.Now().Add(time.Hour * 72).Unix()
-		token, err = jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secretKey))
-	}
-	return token, err
+
+	return token, nil
 }
