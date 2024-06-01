@@ -1,7 +1,10 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/gridfs"
 )
 
 type ApplicationHandler struct {
@@ -20,104 +24,14 @@ type ApplicationHandler struct {
 	errorHandler *handler.ErrorHandler
 }
 
-func NewApplicationHandler(collection *mongo.Collection, erroHandler *handler.ErrorHandler) *ApplicationHandler {
+func NewApplicationHandler(collection *mongo.Collection, errorHandler *handler.ErrorHandler) *ApplicationHandler {
 	return &ApplicationHandler{
 		Collection:   collection,
-		errorHandler: erroHandler,
+		errorHandler: errorHandler,
 	}
-}
-func (ah *ApplicationHandler) GetAdminApplications(c *gin.Context) {
-	role, ok := c.MustGet("role").(string)
-	if !ok {
-		ah.errorHandler.HandleBadRequest(c)
-		return
-	}
-	if role != "admin" {
-		ah.errorHandler.HandleUnauthorized(c)
-		return
-	}
-
-	userId, ok := c.MustGet("id").(string)
-	if !ok {
-		ah.errorHandler.HandleBadRequest(c)
-		return
-	}
-
-	objectId, err := primitive.ObjectIDFromHex(userId)
-	if err != nil {
-		ah.errorHandler.HandleBadRequest(c)
-		return
-	}
-
-	var jobs []models.Job
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-
-	filter := bson.M{"userId": objectId}
-	cursor, err := db.DB.Collection("jobs").Find(ctx, filter)
-	if err != nil {
-		ah.errorHandler.HandleInternalServerError(c)
-		return
-	}
-	defer cursor.Close(ctx)
-
-	err = cursor.All(ctx, &jobs)
-	if err != nil {
-		ah.errorHandler.HandleInternalServerError(c)
-		return
-	}
-
-	// Check if the user has no jobs
-	if len(jobs) == 0 {
-		c.JSON(http.StatusOK, jobs)
-		return
-	}
-
-	var jobIDs []primitive.ObjectID
-	for _, job := range jobs {
-		jobIDs = append(jobIDs, job.ID)
-	}
-
-	appFilter := bson.M{"jobId": bson.M{"$in": jobIDs}}
-	appCursor, err := ah.Collection.Find(ctx, appFilter)
-	if err != nil {
-		ah.errorHandler.HandleInternalServerError(c)
-		return
-	}
-	defer appCursor.Close(ctx)
-
-	var applications []models.Application
-	err = appCursor.All(ctx, &applications)
-	if err != nil {
-		ah.errorHandler.HandleInternalServerError(c)
-		return
-	}
-
-	// Check if there are no applications for the user's job IDs
-	if len(applications) == 0 {
-		c.JSON(http.StatusOK, gin.H{"message": "No applications available for the user's jobs"})
-		return
-	}
-
-	var applicationResponses []models.ApplicationAdminResponse
-	for _, application := range applications {
-		applicationResponse := models.ApplicationAdminResponse{
-			ID:      application.ID,
-			JobID:   application.JobID,
-			Resume:  application.Resume,
-			Name:    application.Name,
-			Email:   application.Email,
-			Status:  application.Status,
-			JobName: application.JobName,
-		}
-		applicationResponses = append(applicationResponses, applicationResponse)
-	}
-
-	c.JSON(http.StatusOK, applicationResponses)
 }
 
 func (ah *ApplicationHandler) CreateApplications(c *gin.Context) {
-
 	role, ok := c.MustGet("role").(string)
 	if !ok {
 		ah.errorHandler.HandleBadRequest(c)
@@ -151,28 +65,53 @@ func (ah *ApplicationHandler) CreateApplications(c *gin.Context) {
 		return
 	}
 
-	ObjectId, err := primitive.ObjectIDFromHex(userIDStr)
+	objectId, err := primitive.ObjectIDFromHex(userIDStr)
 	if err != nil {
 		ah.errorHandler.HandleBadRequest(c)
 		return
 	}
 
 	var application models.Application
-
 	if err := c.BindJSON(&application); err != nil {
 		ah.errorHandler.HandleBadRequest(c)
+		log.Println("error in bind ", err)
 		return
 	}
 
 	application.ID = primitive.NewObjectID()
-	application.UserID = ObjectId
+	application.UserID = objectId
 	application.Email = email
 	application.Name = name
 
 	statusCapitalize := utils.CapitalizeFirstLetter(application.Status)
 	application.Status = statusCapitalize
 
-	//check if the job exists
+	// Store the resume PDF in GridFS
+	bucket, err := gridfs.NewBucket(ah.Collection.Database())
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	uploadStream, err := bucket.OpenUploadStream(application.Resume.Filename)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer uploadStream.Close()
+
+	_, err = uploadStream.Write(application.Resume.Data)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	application.Resume = models.PDF{
+		Filename:    application.Resume.Filename,
+		ContentType: application.Resume.ContentType,
+		Data:        []byte(uploadStream.FileID.(primitive.ObjectID).Hex()), // Storing the ObjectID as a string
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -183,6 +122,135 @@ func (ah *ApplicationHandler) CreateApplications(c *gin.Context) {
 	}
 	c.JSON(http.StatusCreated, application)
 }
+
+func (ah *ApplicationHandler) GetAdminApplications(c *gin.Context) {
+	// Check role
+	role, ok := c.MustGet("role").(string)
+	if !ok {
+		ah.errorHandler.HandleBadRequest(c)
+		return
+	}
+	if role != "admin" {
+		ah.errorHandler.HandleUnauthorized(c)
+		return
+	}
+
+	// Retrieve user ID
+	userId, ok := c.MustGet("id").(string)
+	if !ok {
+		ah.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	// Convert user ID to ObjectID
+	objectId, err := primitive.ObjectIDFromHex(userId)
+	if err != nil {
+		ah.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	// Query jobs associated with the user
+	var jobs []models.Job
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	filter := bson.M{"userId": objectId}
+	cursor, err := db.DB.Collection("jobs").Find(ctx, filter)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	err = cursor.All(ctx, &jobs)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	// If no jobs found, return empty response
+	if len(jobs) == 0 {
+		c.JSON(http.StatusOK, jobs)
+		return
+	}
+
+	// Extract job IDs
+	var jobIDs []primitive.ObjectID
+	for _, job := range jobs {
+		jobIDs = append(jobIDs, job.ID)
+	}
+
+	// Query applications for the user's jobs
+	appFilter := bson.M{"jobId": bson.M{"$in": jobIDs}}
+	appCursor, err := ah.Collection.Find(ctx, appFilter)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer appCursor.Close(ctx)
+
+	var applications []models.Application
+	err = appCursor.All(ctx, &applications)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	// If no applications found, return appropriate message
+	if len(applications) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "No applications available for the user's jobs"})
+		return
+	}
+
+	// Prepare response with PDF data encoded in base64
+	var applicationResponses []models.ApplicationAdminResponse
+	bucket, err := gridfs.NewBucket(ah.Collection.Database())
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	for _, application := range applications {
+		var resumeData []byte
+		if application.Resume.Data != nil {
+			resumeID, err := primitive.ObjectIDFromHex(string(application.Resume.Data))
+			if err != nil {
+				ah.errorHandler.HandleInternalServerError(c)
+				return
+			}
+
+			var buf bytes.Buffer
+			downloadStream, err := bucket.OpenDownloadStream(resumeID)
+			if err != nil {
+				ah.errorHandler.HandleInternalServerError(c)
+				return
+			}
+			defer downloadStream.Close()
+
+			_, err = io.Copy(&buf, downloadStream)
+			if err != nil {
+				ah.errorHandler.HandleInternalServerError(c)
+				return
+			}
+
+			resumeData = buf.Bytes()
+		}
+
+		applicationResponse := models.ApplicationAdminResponse{
+			ID:      application.ID,
+			JobID:   application.JobID,
+			Resume:  models.PDF{Filename: application.Resume.Filename, ContentType: application.Resume.ContentType, Data: resumeData}, // Directly assign PDF data
+			Name:    application.Name,
+			Email:   application.Email,
+			Status:  application.Status,
+			JobName: application.JobName,
+		}
+		applicationResponses = append(applicationResponses, applicationResponse)
+	}
+
+	// Return response
+	c.JSON(http.StatusOK, applicationResponses)
+}
+
 func (ah *ApplicationHandler) GetApplications(c *gin.Context) {
 	role, ok := c.MustGet("role").(string)
 	if !ok {
@@ -313,7 +381,27 @@ func (ah *ApplicationHandler) EditApplication(c *gin.Context) {
 		updateFields["resume.contentType"] = updateApplication.Resume.ContentType
 	}
 	if len(updateApplication.Resume.Data) > 0 {
-		updateFields["resume.data"] = updateApplication.Resume.Data
+		// If new resume data is provided, update it
+		bucket, err := gridfs.NewBucket(ah.Collection.Database())
+		if err != nil {
+			ah.errorHandler.HandleInternalServerError(c)
+			return
+		}
+
+		uploadStream, err := bucket.OpenUploadStream(updateApplication.Resume.Filename)
+		if err != nil {
+			ah.errorHandler.HandleInternalServerError(c)
+			return
+		}
+		defer uploadStream.Close()
+
+		_, err = uploadStream.Write(updateApplication.Resume.Data)
+		if err != nil {
+			ah.errorHandler.HandleInternalServerError(c)
+			return
+		}
+
+		updateFields["resume.data"] = uploadStream.FileID.(primitive.ObjectID).Hex()
 	}
 	if updateApplication.Email != "" {
 		updateFields["email"] = updateApplication.Email
@@ -335,7 +423,6 @@ func (ah *ApplicationHandler) EditApplication(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "application updated"})
 }
 
-// delete application
 func (ah *ApplicationHandler) DeleteApplication(c *gin.Context) {
 	id := c.Params.ByName("id")
 
@@ -360,5 +447,5 @@ func (ah *ApplicationHandler) DeleteApplication(c *gin.Context) {
 		ah.errorHandler.HandleInternalServerError(c)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "application delete"})
+	c.JSON(http.StatusOK, gin.H{"message": "application deleted"})
 }
