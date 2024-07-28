@@ -15,6 +15,7 @@ func BookmarksRoutes(router *gin.Engine) {
 	bookmarkGroup.Use(middleware.Authentication())
 	{
 		bookmarkGroup.GET("/", bookmarkHandler.GetBookmarks)
+		bookmarkGroup.GET("/:id", bookmarkHandler.GetBookmarkById)
 		bookmarkGroup.POST("/", bookmarkHandler.CreateBookmark)
 		bookmarkGroup.DELETE("/:id", bookmarkHandler.DeleteBookmark)
 	}

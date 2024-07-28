@@ -15,6 +15,8 @@ func ApplicationRoutes(router *gin.Engine) {
 	applicationGroup.Use(middleware.Authentication())
 	{
 		applicationGroup.GET("/admin", applicationHandler.GetAdminApplications)
+		applicationGroup.GET("/admin/info", applicationHandler.AdminInformation)
+		applicationGroup.GET("/admin/search", applicationHandler.SearchAdminApplications)
 		applicationGroup.GET("/", applicationHandler.GetApplications)
 		applicationGroup.POST("/", applicationHandler.CreateApplications)
 		applicationGroup.PUT("/admin/:id", applicationHandler.EditApplication)

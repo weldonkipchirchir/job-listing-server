@@ -21,5 +21,9 @@ func JobRoutes(router *gin.Engine) {
 		jobGroup.POST("/create", jobHandler.CreateJob)
 		jobGroup.PUT("/admin/:id", jobHandler.Updatejob)
 		jobGroup.DELETE("/admin/:id", jobHandler.DeleteJob)
+		jobGroup.GET("/jobs/search", jobHandler.SearchJobs)
+		jobGroup.GET("/search", jobHandler.SearchJobsAll)
+		jobGroup.GET("/admin/latest-jobs", jobHandler.GetAdminsLatestJobs)
+		jobGroup.GET("/admin-jobs", jobHandler.SearchAdminJobs)
 	}
 }
