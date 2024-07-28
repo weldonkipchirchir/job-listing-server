@@ -13,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type JobHandler struct {
@@ -363,5 +364,228 @@ func (jh *JobHandler) GetSponsoredJobs(c *gin.Context) {
 		jh.errorHandler.HandleInternalServerError(c)
 		return
 	}
+	c.JSON(http.StatusOK, jobs)
+}
+
+func (jh *JobHandler) SearchJobs(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	var filters bson.M = bson.M{}
+
+	if jobName := c.Query("jobName"); jobName != "" {
+		filters["jobName"] = bson.M{"$regex": jobName, "$options": "i"}
+	}
+	if jobType := c.Query("type"); jobType != "" {
+		filters["type"] = bson.M{"$regex": jobType, "$options": "i"}
+	}
+	if location := c.Query("location"); location != "" {
+		filters["location"] = bson.M{"$regex": location, "$options": "i"}
+	}
+	if company := c.Query("company"); company != "" {
+		filters["company"] = bson.M{"$regex": company, "$options": "i"}
+	}
+	if industry := c.Query("industry"); industry != "" {
+		filters["industry"] = bson.M{"$regex": industry, "$options": "i"}
+	}
+	if currency := c.Query("industry"); currency != "" {
+		filters["currency"] = bson.M{"$regex": currency, "$options": "i"}
+	}
+	if salaryHigh := c.Query("industry"); salaryHigh != "" {
+		filters["salaryHigh"] = bson.M{"$regex": salaryHigh, "$options": "i"}
+	}
+
+	var jobs []models.Job
+	cursor, err := jh.Collection.Find(ctx, filters)
+	if err != nil {
+		jh.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	if err := cursor.All(ctx, &jobs); err != nil {
+		jh.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	if len(jobs) == 0 {
+		jobs = []models.Job{}
+	}
+
+	c.JSON(http.StatusOK, jobs)
+}
+
+func (jh *JobHandler) SearchJobsAll(c *gin.Context) {
+	searchTerm := c.Query("searchTerm")
+	if searchTerm == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Search term is required"})
+		return
+	}
+
+	// Create a regex pattern to search case-insensitively
+	searchPattern := primitive.Regex{Pattern: searchTerm, Options: "i"}
+
+	// Create the filter with $or to check the search term in multiple fields
+	filter := bson.M{
+		"$or": []bson.M{
+			{"jobName": searchPattern},
+			{"type": searchPattern},
+			{"location": searchPattern},
+			{"salaryHigh": searchPattern},
+			{"salaryLow": searchPattern},
+			{"company": searchPattern},
+			{"jobDescription": searchPattern},
+			{"industry": searchPattern},
+			{"currency": searchPattern},
+		},
+	}
+
+	var jobs []models.Job
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cursor, err := jh.Collection.Find(ctx, filter)
+	if err != nil {
+		jh.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	if err = cursor.All(ctx, &jobs); err != nil {
+		jh.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	if len(jobs) == 0 {
+		jobs = []models.Job{}
+	}
+
+	c.JSON(http.StatusOK, jobs)
+}
+
+func (jh *JobHandler) GetAdminsLatestJobs(c *gin.Context) {
+	role, ok := c.MustGet("role").(string)
+	if !ok {
+		jh.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	if role != "admin" {
+		jh.errorHandler.HandleUnauthorized(c)
+		return
+	}
+
+	userId, ok := c.MustGet("id").(string)
+	if !ok {
+		jh.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	objectId, err := primitive.ObjectIDFromHex(userId)
+	if err != nil {
+		jh.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	filter := bson.M{"userId": objectId}
+
+	// Sort by the insertion timestamp in descending order to get the latest jobs first
+	opts := options.Find().SetSort(bson.D{{"_id", -1}}).SetLimit(4)
+
+	var jobs []models.Job
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cursor, err := jh.Collection.Find(ctx, filter, opts)
+	if err != nil {
+		jh.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	if err := cursor.All(ctx, &jobs); err != nil {
+		jh.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	// Calculate the time difference for each job
+	currentTime := time.Now()
+	for i := range jobs {
+		insertionTime := jobs[i].ID.Timestamp()
+		daysAgo := int(currentTime.Sub(insertionTime).Hours() / 24)
+		jobs[i].DaysAgo = daysAgo
+	}
+
+	c.JSON(http.StatusOK, jobs)
+}
+
+func (jh *JobHandler) SearchAdminJobs(c *gin.Context) {
+	role, ok := c.MustGet("role").(string)
+	if !ok {
+		jh.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	if role != "admin" {
+		jh.errorHandler.HandleUnauthorized(c)
+		return
+	}
+
+	userId, ok := c.MustGet("id").(string)
+	if !ok {
+		jh.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	objectId, err := primitive.ObjectIDFromHex(userId)
+	if err != nil {
+		jh.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	searchTerm := c.Query("searchTerm")
+	if searchTerm == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Search term is required"})
+		return
+	}
+
+	// Create a regex pattern to search case-insensitively
+	searchPattern := primitive.Regex{Pattern: searchTerm, Options: "i"}
+
+	// Create the filter with $or to check the search term in multiple fields
+	filter := bson.M{"userId": objectId,
+		"$or": []bson.M{
+			{"jobName": searchPattern},
+			{"type": searchPattern},
+			{"location": searchPattern},
+			{"salaryHigh": searchPattern},
+			{"salaryLow": searchPattern},
+			{"company": searchPattern},
+			{"jobDescription": searchPattern},
+			{"industry": searchPattern},
+			{"currency": searchPattern},
+		},
+	}
+
+	var jobs []models.Job
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cursor, err := jh.Collection.Find(ctx, filter)
+	if err != nil {
+		jh.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	if err = cursor.All(ctx, &jobs); err != nil {
+		jh.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	if len(jobs) == 0 {
+		jobs = []models.Job{}
+	}
+
 	c.JSON(http.StatusOK, jobs)
 }
