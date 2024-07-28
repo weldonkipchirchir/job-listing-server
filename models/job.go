@@ -21,4 +21,5 @@ type Job struct {
 	OptionalRequirements  []string           `json:"optionalRequirements" bson:"optionalRequirements"`
 	JobDescription        string             `json:"jobDescription" bson:"jobDescription" validate:"required"`
 	Industry              string             `json:"industry" bson:"industry" validate:"required"`
+	DaysAgo               int                `json:"daysAgo" bson:"-"`
 }
