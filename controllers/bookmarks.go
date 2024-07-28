@@ -181,3 +181,55 @@ func (bh *BookmarkHandler) DeleteBookmark(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "job deleted"})
 }
+
+func (bh *BookmarkHandler) GetBookmarkById(c *gin.Context) {
+	id := c.Param("id")
+
+	objectID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		bh.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	role, ok := c.MustGet("role").(string)
+	if !ok {
+		bh.errorHandler.HandleBadRequest(c)
+		return
+	}
+	if role != "user" {
+		bh.errorHandler.HandleUnauthorized(c)
+		return
+	}
+
+	userId, ok := c.MustGet("id").(string)
+	if !ok {
+		bh.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	userObjectId, err := primitive.ObjectIDFromHex(userId)
+	if err != nil {
+		bh.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	filter := bson.M{"userId": userObjectId, "jobId": objectID}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var bookmark models.Bookmark
+	err = bh.Collection.FindOne(ctx, filter).Decode(&bookmark)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			// Return an empty array instead of a not found error
+			c.JSON(http.StatusOK, []models.Bookmark{})
+			return
+		}
+		bh.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	// Return the bookmark wrapped in an array
+	c.JSON(http.StatusOK, []models.Bookmark{bookmark})
+}
