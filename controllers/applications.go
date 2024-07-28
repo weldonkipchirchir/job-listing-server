@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
@@ -74,7 +73,6 @@ func (ah *ApplicationHandler) CreateApplications(c *gin.Context) {
 	var application models.Application
 	if err := c.BindJSON(&application); err != nil {
 		ah.errorHandler.HandleBadRequest(c)
-		log.Println("error in bind ", err)
 		return
 	}
 
@@ -448,4 +446,193 @@ func (ah *ApplicationHandler) DeleteApplication(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "application deleted"})
+}
+
+func (ah *ApplicationHandler) SearchAdminApplications(c *gin.Context) {
+	role, ok := c.MustGet("role").(string)
+	if !ok {
+		ah.errorHandler.HandleBadRequest(c)
+		return
+	}
+	if role != "admin" {
+		ah.errorHandler.HandleUnauthorized(c)
+		return
+	}
+
+	userId, ok := c.MustGet("id").(string)
+	if !ok {
+		ah.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	objectId, err := primitive.ObjectIDFromHex(userId)
+	if err != nil {
+		ah.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	// Query jobs associated with the user
+	var jobs []models.Job
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	filter := bson.M{"userId": objectId}
+	cursor, err := db.DB.Collection("jobs").Find(ctx, filter)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	err = cursor.All(ctx, &jobs)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	// If no jobs found, return empty response
+	if len(jobs) == 0 {
+		c.JSON(http.StatusOK, jobs)
+		return
+	}
+
+	// Extract job IDs
+	var jobIDs []primitive.ObjectID
+	for _, job := range jobs {
+		jobIDs = append(jobIDs, job.ID)
+	}
+
+	var filters bson.M = bson.M{"jobId": bson.M{"$in": jobIDs}}
+
+	if email := c.Query("email"); email != "" {
+		filters["email"] = bson.M{"$regex": email, "$options": "i"}
+	}
+
+	var application []models.Application
+	cursor, err = ah.Collection.Find(ctx, filters)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	if err := cursor.All(ctx, &application); err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	if len(application) == 0 {
+		application = []models.Application{}
+	}
+	c.JSON(http.StatusOK, application)
+}
+
+func (ah *ApplicationHandler) AdminInformation(c *gin.Context) {
+	role, ok := c.MustGet("role").(string)
+	if !ok {
+		ah.errorHandler.HandleBadRequest(c)
+		return
+	}
+	if role != "admin" {
+		ah.errorHandler.HandleUnauthorized(c)
+		return
+	}
+
+	userId, ok := c.MustGet("id").(string)
+	if !ok {
+		ah.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	objectId, err := primitive.ObjectIDFromHex(userId)
+	if err != nil {
+		ah.errorHandler.HandleBadRequest(c)
+		return
+	}
+
+	// Query jobs associated with the user
+	var jobs []models.Job
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	filter := bson.M{"userId": objectId}
+	cursor, err := db.DB.Collection("jobs").Find(ctx, filter)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	err = cursor.All(ctx, &jobs)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	var activeJobs int        // Initialize activeJobs to 0
+	var totalApplications int // Initialize totalApplications to 0
+	var newApplication int    // Initialize newApplication to 0
+
+	// If no jobs found, return empty response
+	if len(jobs) == 0 {
+		res := gin.H{
+			"activeJobs":        activeJobs,
+			"totalApplications": totalApplications,
+			"totalUsers":        totalApplications, // Assuming totalUsers should have the same value as totalApplications
+			"newApplication":    newApplication,
+		}
+		c.JSON(http.StatusOK, res)
+		return
+	}
+
+	// Extract job IDs
+	var jobIDs []primitive.ObjectID
+	for _, job := range jobs {
+		jobIDs = append(jobIDs, job.ID)
+		activeJobs += 1
+	}
+
+	var filters bson.M = bson.M{"jobId": bson.M{"$in": jobIDs}}
+
+	var application []models.Application
+	cursor, err = ah.Collection.Find(ctx, filters)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	if err := cursor.All(ctx, &application); err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	// Update totalApplications based on the length of the application slice
+	totalApplications = len(application)
+
+	var filtersStatus bson.M = bson.M{"status": "Pending", "jobId": bson.M{"$in": jobIDs}}
+
+	var applicationStatus []models.Application
+	cursor, err = ah.Collection.Find(ctx, filtersStatus)
+	if err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	if err := cursor.All(ctx, &applicationStatus); err != nil {
+		ah.errorHandler.HandleInternalServerError(c)
+		return
+	}
+
+	// Update newApplication based on the length of the applicationStatus slice
+	newApplication = len(applicationStatus)
+
+	res := gin.H{
+		"activeJobs":        activeJobs,
+		"totalApplications": totalApplications,
+		"totalUsers":        totalApplications, // Assuming totalUsers should have the same value as totalApplications
+		"newApplication":    newApplication,
+	}
+
+	c.JSON(http.StatusOK, res)
 }
